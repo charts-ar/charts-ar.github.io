@@ -1,0 +1,4 @@
+body { font-family: system-ui, Arial; background:#f4f6f8; margin:0; padding:20px; display:flex; align-items:center; justify-content:center; }
+.panel { background:white; padding:16px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.06); width:100%; max-width:400px; }
+input, button { font-size:16px; padding:8px; margin:6px 0; width:100%; box-sizing:border-box; }
+button { cursor:pointer; }

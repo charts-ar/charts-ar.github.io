@@ -8,65 +8,66 @@ import { Resend } from 'resend';
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const resend = new Resend(process.env.RESEND_API_KEY);
-
 const SESSION_SECRET = process.env.SESSION_SECRET;
+const BASE_URL = process.env.BASE_URL || 'https://your‑domain.com'; // set this in env
 
-// Helper to send verification email via Resend
+// Helper to send verification email
 async function sendVerificationEmail(email, username, token) {
-  const verifyLink = `${process.env.BASE_URL}/public/verify.html?token=${token}`;
+  const link = `${BASE_URL}/public/verify.html?token=${token}`;
   const { data, error } = await resend.emails.send({
-    from: 'YourApp <no-reply@yourdomain.com>',
+    from: `ChatApp <no‑reply@yourdomain.com>`,
     to: [email],
-    subject: 'Verify your email',
-    html: `<p>Hi ${username},</p>
-           <p>Please verify your email by clicking <a href="${verifyLink}">this link</a>.</p>`
+    subject: 'Please verify your email',
+    html: `<p>Hello ${username},</p>
+           <p>Please verify your email by clicking the link below:</p>
+           <p><a href="${link}">Verify your email</a></p>`
   });
   if (error) {
-    console.error('Resend email error:', error);
-    throw new Error('Error sending verification email');
+    console.error('Error sending email:', error);
+    throw new Error('Email sending failed');
   }
   return data;
 }
 
-// Registration
+// Register
 router.post('/register', async (req, res) => {
   const { email, username, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password required' });
+  if (!email || !password || !username) {
+    return res.status(400).json({ error: 'Email, username and password required' });
   }
   try {
     const client = await pool.connect();
     const existing = await client.query('SELECT id FROM users WHERE email=$1', [email]);
     if (existing.rows.length) {
       client.release();
-      return res.status(400).json({ error: 'Email already registered' });
+      return res.status(400).json({ error: 'Email already in use' });
     }
     const password_hash = await bcrypt.hash(password, 10);
     const result = await client.query(
-      'INSERT INTO users(email, username, password_hash) VALUES($1,$2,$3) RETURNING id, username',
-      [email, username || null, password_hash]
+      'INSERT INTO users(email, username, password_hash) VALUES($1, $2, $3) RETURNING id, username',
+      [email, username, password_hash]
     );
     const userId = result.rows[0].id;
-    const uname = result.rows[0].username || email;
+    const uname = result.rows[0].username;
     const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 24*60*60*1000); // 24h
+    const expiresAt = new Date(Date.now() + 24*60*60*1000);
     await client.query(
-      'INSERT INTO verification_tokens(user_id, token, expires_at) VALUES($1,$2,$3)',
+      'INSERT INTO verification_tokens(user_id, token, expires_at) VALUES($1, $2, $3)',
       [userId, token, expiresAt]
     );
     await sendVerificationEmail(email, uname, token);
     client.release();
-    return res.json({ message: 'Registered – check your email to verify.' });
+    return res.json({ message: 'Registration successful. Check your email to verify.' });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Internal error' });
+    return res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Email verification
+// Verify email
 router.get('/verify', async (req, res) => {
   const { token } = req.query;
-  if (!token) return res.status(400).send('Invalid token');
+  if (!token) return res.status(400).send('Invalid or missing token');
   try {
     const client = await pool.connect();
     const vt = await client.query(
@@ -85,10 +86,10 @@ router.get('/verify', async (req, res) => {
     await client.query('UPDATE users SET verified=true WHERE id=$1', [user_id]);
     await client.query('DELETE FROM verification_tokens WHERE user_id=$1', [user_id]);
     client.release();
-    return res.send('Email verified – you may now log in.');
+    return res.send('Email verified! You may now log in.');
   } catch (err) {
     console.error(err);
-    return res.status(500).send('Internal error');
+    return res.status(500).send('Server error');
   }
 });
 
@@ -98,15 +99,15 @@ router.post('/login', async (req, res) => {
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   try {
     const client = await pool.connect();
-    const u = await client.query(
-      'SELECT id, username, password_hash, verified FROM users WHERE email=$1',
+    const userQ = await client.query(
+      'SELECT id, username, password_hash, verified, role FROM users WHERE email=$1',
       [email]
     );
-    if (u.rows.length === 0) {
+    if (userQ.rows.length === 0) {
       client.release();
       return res.status(400).json({ error: 'Invalid credentials' });
     }
-    const user = u.rows[0];
+    const user = userQ.rows[0];
     if (!user.verified) {
       client.release();
       return res.status(403).json({ error: 'Email not verified' });
@@ -116,13 +117,17 @@ router.post('/login', async (req, res) => {
       client.release();
       return res.status(400).json({ error: 'Invalid credentials' });
     }
-    const token = jwt.sign({ userId: user.id, username: user.username }, SESSION_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign(
+      { userId: user.id, username: user.username, role: user.role },
+      SESSION_SECRET,
+      { expiresIn: '7d' }
+    );
     client.release();
     res.cookie('session', token, { httpOnly: true, secure: true, maxAge: 7*24*60*60*1000 });
-    return res.json({ message: 'Logged in', username: user.username });
+    return res.json({ message: 'Login successful', username: user.username, role: user.role });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Internal error' });
+    return res.status(500).json({ error: 'Server error' });
   }
 });
 
